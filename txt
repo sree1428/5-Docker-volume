@@ -1,0 +1,7 @@
+photo-gallery/
+├── app.js
+├── package.json
+├── Dockerfile
+├── .dockerignore
+└── public/
+    └── index.html
