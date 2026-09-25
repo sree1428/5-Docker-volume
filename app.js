@@ -1,58 +1,110 @@
 const express = require('express');
-const { Pool } = require('pg');
+const multer = require('multer');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
-app.use(express.json());
 
-// Database connection
-// NOTE: Developer uses env vars — they don't know WHERE the DB is yet.
-// That's YOUR job as DevOps to provide these.
-const pool = new Pool({
-  host: process.env.DB_HOST,
-  port: process.env.DB_PORT,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
+// ============================================================
+// 👇👇👇 THIS IS THE FOLDER WE'LL MOUNT A VOLUME TO 👇👇👇
+// ============================================================
+const PHOTO_FOLDER = '/app/photos';
+
+// Make sure the folder exists
+if (!fs.existsSync(PHOTO_FOLDER)) {
+  fs.mkdirSync(PHOTO_FOLDER, { recursive: true });
+}
+
+// ============================================================
+// MULTER CONFIG — where and how to save uploaded files
+// ============================================================
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, PHOTO_FOLDER);            // 👈 saves to /app/photos
+  },
+  filename: (req, file, cb) => {
+    // Prefix with timestamp to avoid name clashes
+    const uniqueName = Date.now() + '-' + file.originalname;
+    cb(null, uniqueName);
+  },
 });
 
-// Routes
-app.get('/', (req, res) => {
-  res.json({ message: 'Task Manager API is alive' });
+// Only accept image files
+const fileFilter = (req, file, cb) => {
+  if (file.mimetype.startsWith('image/')) {
+    cb(null, true);
+  } else {
+    cb(new Error('Only image files are allowed!'), false);
+  }
+};
+
+const upload = multer({
+  storage: storage,
+  fileFilter: fileFilter,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB max
 });
 
-// Get all tasks
-app.get('/tasks', async (req, res) => {
-  const result = await pool.query('SELECT * FROM tasks ORDER BY id DESC');
-  res.json(result.rows);
+// ============================================================
+// SERVE STATIC FRONTEND
+// ============================================================
+app.use(express.static('public'));
+
+// ============================================================
+// UPLOAD A PHOTO (multipart/form-data)
+// ============================================================
+app.post('/upload', upload.single('photo'), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No file uploaded' });
+  }
+  res.json({
+    message: 'Photo uploaded!',
+    filename: req.file.filename,
+    size: req.file.size,
+    path: `/photos/${req.file.filename}`,
+  });
 });
 
-// Create a task
-app.post('/tasks', async (req, res) => {
-  const { title } = req.body;
-  const result = await pool.query(
-    'INSERT INTO tasks (title) VALUES ($1) RETURNING *',
-    [title]
-  );
-  res.status(201).json(result.rows[0]);
+// ============================================================
+// LIST ALL PHOTOS
+// ============================================================
+app.get('/photos', (req, res) => {
+  const files = fs.readdirSync(PHOTO_FOLDER);
+  const photos = files.map((file) => ({
+    filename: file,
+    url: `/photos/${file}`,
+    size: fs.statSync(path.join(PHOTO_FOLDER, file)).size,
+  }));
+  res.json({ count: photos.length, photos });
 });
 
-// Mark task as done
-app.patch('/tasks/:id', async (req, res) => {
-  const result = await pool.query(
-    'UPDATE tasks SET done = true WHERE id = $1 RETURNING *',
-    [req.params.id]
-  );
-  res.json(result.rows[0]);
+// ============================================================
+// SERVE A SINGLE PHOTO (so you can view it in browser)
+// ============================================================
+app.get('/photos/:filename', (req, res) => {
+  const filePath = path.join(PHOTO_FOLDER, req.params.filename);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'Photo not found' });
+  }
+  res.sendFile(filePath);
 });
 
-// Delete a task
-app.delete('/tasks/:id', async (req, res) => {
-  await pool.query('DELETE FROM tasks WHERE id = $1', [req.params.id]);
-  res.json({ message: 'Deleted' });
+// ============================================================
+// DELETE A PHOTO
+// ============================================================
+app.delete('/photos/:filename', (req, res) => {
+  const filePath = path.join(PHOTO_FOLDER, req.params.filename);
+  if (fs.existsSync(filePath)) {
+    fs.unlinkSync(filePath);
+    res.json({ message: 'Deleted' });
+  } else {
+    res.status(404).json({ error: 'Not found' });
+  }
 });
 
-// Start server
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+// ============================================================
+// START SERVER
+// ============================================================
+app.listen(3000, () => {
+  console.log('📸 Photo Gallery running on port 3000');
+  console.log(`📁 Saving photos to: ${PHOTO_FOLDER}`);
 });
